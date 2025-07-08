@@ -58,14 +58,15 @@ class TokenRateTester:
         return random.choice(self.test_prompts)
 
     def call_model_api(self, prompt: str) -> dict:
-        openai.api_key = self.config.api_key
-        openai.base_url = self.config.model_url.rstrip("/v1/chat/completions")
+        api_key = self.config.api_key if self.config.api_type in ("openai", "thirdparty") else None
+        base_url = self.config.model_url.rstrip("/v1/chat/completions")
+        client = openai.OpenAI(api_key=api_key or None, base_url=base_url)
         start_time = time.time()
         first_token_time = None
         total_tokens = 0
         content = ''
         try:
-            stream = openai.ChatCompletion.create(
+            stream = client.chat.completions.create(
                 model=self.config.model_name,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=self.config.max_tokens,
@@ -73,14 +74,12 @@ class TokenRateTester:
                 stream=True
             )
             for chunk in stream:
-                if 'choices' in chunk and chunk['choices']:
-                    delta = chunk['choices'][0].get('delta', {})
-                    token_piece = delta.get('content', '')
-                    if token_piece:
-                        if first_token_time is None:
-                            first_token_time = time.time()
-                        content += token_piece
-                        total_tokens += 1
+                token_piece = getattr(chunk.choices[0].delta, 'content', '')
+                if token_piece:
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                    content += token_piece
+                    total_tokens += 1
             end_time = time.time()
             if first_token_time is None:
                 first_token_time = end_time
