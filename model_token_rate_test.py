@@ -152,10 +152,12 @@ class TokenRateTester:
             success_count = 0
             error_count = 0
             response_times = []
+            error_msgs = []
             for i, response in enumerate(responses):
                 if isinstance(response, Exception):
                     error_count += 1
                     self.logger.error(f"任务 {i} 异常: {response}")
+                    error_msgs.append(f"任务 {i} 异常: {response}")
                 elif isinstance(response, dict) and response.get('success'):
                     success_count += 1
                     total_tokens += response.get('tokens', 0)
@@ -164,9 +166,11 @@ class TokenRateTester:
                     error_count += 1
                     error_msg = response.get('error', '未知错误')
                     self.logger.error(f"任务 {i} 失败: {error_msg}")
+                    error_msgs.append(f"任务 {i} 失败: {error_msg}")
                 else:
                     error_count += 1
                     self.logger.error(f"任务 {i} 返回了意外的响应类型: {type(response)}")
+                    error_msgs.append(f"任务 {i} 返回了意外的响应类型: {type(response)}")
             total_time = end_time - start_time
             tokens_per_second = total_tokens / total_time if total_time > 0 else 0
             result = TestResult(
@@ -182,6 +186,10 @@ class TokenRateTester:
             )
             self.results.append(result)
             self.logger.info(f"并发数 {concurrency} 测试完成: {tokens_per_second:.2f} tokens/s")
+            if error_msgs:
+                self.logger.error(f"并发数 {concurrency} 失败任务详情：\n" + "\n".join(error_msgs))
+                if success_count == 0:
+                    self.logger.error(f"并发数 {concurrency} 下全部任务失败，请检查API Key、网络、模型服务等配置。")
             return result
 
     def generate_report(self, timestamp: str = None):
