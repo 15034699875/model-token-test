@@ -5,16 +5,14 @@
 支持并发测试、报告生成、结果保存等功能
 """
 
-import asyncio
-import aiohttp
-import json
+import openai
 import time
 import random
 import os
 from datetime import datetime
 from typing import List, Dict, Any
 import matplotlib.pyplot as plt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 
 @dataclass
@@ -28,6 +26,10 @@ class TestResult:
     avg_response_time: float
     min_response_time: float
     max_response_time: float
+    first_token_timeouts: list = field(default_factory=list)
+    avg_first_token_timeout: float = 0.0
+    min_first_token_timeout: float = 0.0
+    max_first_token_timeout: float = 0.0
 
 class TokenRateTester:
     def __init__(self, config, output_dir='outputs', logger=None):
@@ -55,85 +57,41 @@ class TokenRateTester:
     def get_random_prompt(self) -> str:
         return random.choice(self.test_prompts)
 
-    async def call_model_api(self, session: aiohttp.ClientSession, prompt: str) -> Dict[str, Any]:
-        api_type = getattr(self.config, 'api_type', 'openai')
-        headers = {"Content-Type": "application/json"}
-        if getattr(self.config, 'api_key', None):
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-        # 构造不同API类型的请求体
-        if api_type in ('openai', 'thirdparty'):
-            payload = {
-                "model": self.config.model_name,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": self.config.max_tokens,
-                "temperature": self.config.temperature,
-                "stream": False
-            }
-        elif api_type == 'vllm':
-            payload = {
-                "model": self.config.model_name,
-                "prompt": prompt,
-                "max_tokens": self.config.max_tokens,
-                "temperature": self.config.temperature,
-                "stream": False
-            }
-        elif api_type == 'ollama':
-            payload = {
-                "model": self.config.model_name,
-                "prompt": prompt,
-                "options": {"num_predict": self.config.max_tokens, "temperature": self.config.temperature}
-            }
-        else:
-            return {'success': False, 'error': f'不支持的API类型: {api_type}', 'response_time': 0}
+    def call_model_api(self, prompt: str) -> dict:
+        openai.api_key = self.config.api_key
+        openai.base_url = self.config.model_url.rstrip("/v1/chat/completions")
         start_time = time.time()
+        first_token_time = None
+        total_tokens = 0
+        content = ''
         try:
-            async with session.post(
-                self.config.model_url,
-                headers=headers,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=self.config.timeout)
-            ) as response:
-                response_bytes = await response.read()
-                end_time = time.time()
-                try:
-                    response_text = response_bytes.decode('utf-8')
-                except Exception:
-                    return {'success': False, 'error': '返回内容非UTF-8编码，疑似乱码', 'response_time': end_time - start_time}
-                if response.status == 200:
-                    try:
-                        data = json.loads(response_text)
-                        # 解析不同API类型的返回
-                        if api_type in ('openai', 'thirdparty'):
-                            content = data['choices'][0]['message']['content']
-                            usage = data.get('usage', {})
-                            tokens = usage.get('total_tokens', 0)
-                        elif api_type == 'vllm':
-                            content = data['text'] if 'text' in data else data.get('output', '')
-                            tokens = data.get('num_tokens', 0)
-                        elif api_type == 'ollama':
-                            content = data.get('response', '')
-                            tokens = data.get('eval_count', 0)
-                        else:
-                            content = str(data)
-                            tokens = 0
-                        # 检查内容是否乱码（简单检测）
-                        if '\ufffd' in content:
-                            return {'success': False, 'error': '返回内容疑似乱码', 'response_time': end_time - start_time}
-                        return {
-                            'success': True,
-                            'content': content,
-                            'tokens': tokens,
-                            'response_time': end_time - start_time,
-                            'raw_response': response_text
-                        }
-                    except Exception as e:
-                        return {'success': False, 'error': f'解析响应失败: {e}', 'response_time': end_time - start_time}
-                else:
-                    return {
-                        'success': False,
-                        'error': f"HTTP {response.status}: {response_text}",
-                        'response_time': end_time - start_time
-                    }
+            stream = openai.ChatCompletion.create(
+                model=self.config.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                stream=True
+            )
+            for chunk in stream:
+                if 'choices' in chunk and chunk['choices']:
+                    delta = chunk['choices'][0].get('delta', {})
+                    token_piece = delta.get('content', '')
+                    if token_piece:
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                        content += token_piece
+                        total_tokens += 1
+            end_time = time.time()
+            if first_token_time is None:
+                first_token_time = end_time
+            return {
+                'success': True,
+                'content': content,
+                'tokens': total_tokens,
+                'response_time': end_time - start_time,
+                'first_token_timeout': first_token_time - start_time,
+                'raw_response': '[streamed]'
+            }
         except Exception as e:
             end_time = time.time()
             return {
@@ -142,57 +100,63 @@ class TokenRateTester:
                 'response_time': end_time - start_time
             }
 
-    async def test_concurrency(self, concurrency: int) -> TestResult:
+    def test_concurrency(self, concurrency: int) -> TestResult:
         self.logger.info(f"开始测试并发数: {concurrency}")
-        async with aiohttp.ClientSession() as session:
-            tasks = [self.call_model_api(session, self.get_random_prompt()) for _ in range(concurrency)]
-            start_time = time.time()
-            responses = await asyncio.gather(*tasks, return_exceptions=True)
-            end_time = time.time()
-            total_tokens = 0
-            success_count = 0
-            error_count = 0
-            response_times = []
-            error_msgs = []
-            for i, response in enumerate(responses):
-                if isinstance(response, Exception):
-                    error_count += 1
-                    self.logger.error(f"任务 {i} 异常: {response}")
-                    error_msgs.append(f"任务 {i} 异常: {response}")
-                elif isinstance(response, dict) and response.get('success'):
-                    success_count += 1
-                    total_tokens += response.get('tokens', 0)
-                    response_times.append(response.get('response_time', 0))
-                elif isinstance(response, dict):
-                    error_count += 1
-                    error_msg = response.get('error', '未知错误')
-                    self.logger.error(f"任务 {i} 失败: {error_msg}")
-                    error_msgs.append(f"任务 {i} 失败: {error_msg}")
-                else:
-                    error_count += 1
-                    self.logger.error(f"任务 {i} 返回了意外的响应类型: {type(response)}")
-                    error_msgs.append(f"任务 {i} 返回了意外的响应类型: {type(response)}")
-            total_time = end_time - start_time
-            tokens_per_second = total_tokens / total_time if total_time > 0 else 0
-            result = TestResult(
-                concurrency=concurrency,
-                total_tokens=total_tokens,
-                total_time=total_time,
-                tokens_per_second=tokens_per_second,
-                success_count=success_count,
-                error_count=error_count,
-                avg_response_time=sum(response_times) / len(response_times) if response_times else 0,
-                min_response_time=min(response_times) if response_times else 0,
-                max_response_time=max(response_times) if response_times else 0
-            )
-            self.results.append(result)
-            self.logger.info(f"并发数 {concurrency} 测试完成: {tokens_per_second:.2f} tokens/s")
-            if error_msgs:
-                self.logger.error(f"并发数 {concurrency} 失败任务详情：\n" + "\n".join(error_msgs))
-                if success_count == 0:
-                    self.logger.error(f"并发数 {concurrency} 下全部任务失败，测试已终止，请检查API Key、网络、模型服务等配置。")
-                    raise RuntimeError(f"并发数 {concurrency} 下全部任务失败，测试终止。")
-            return result
+        import concurrent.futures
+        start_time = time.time()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [executor.submit(self.call_model_api, self.get_random_prompt()) for _ in range(concurrency)]
+            responses = [f.result() for f in futures]
+        end_time = time.time()
+        total_tokens = 0
+        success_count = 0
+        error_count = 0
+        response_times = []
+        first_token_timeouts = []
+        error_msgs = []
+        for i, response in enumerate(responses):
+            if isinstance(response, dict) and response.get('success'):
+                success_count += 1
+                total_tokens += response.get('tokens', 0)
+                response_times.append(response.get('response_time', 0))
+                first_token_timeouts.append(response.get('first_token_timeout', 0))
+            elif isinstance(response, dict):
+                error_count += 1
+                error_msg = response.get('error', '未知错误')
+                self.logger.error(f"任务 {i} 失败: {error_msg}")
+                error_msgs.append(f"任务 {i} 失败: {error_msg}")
+            else:
+                error_count += 1
+                self.logger.error(f"任务 {i} 返回了意外的响应类型: {type(response)}")
+                error_msgs.append(f"任务 {i} 返回了意外的响应类型: {type(response)}")
+        total_time = end_time - start_time
+        tokens_per_second = total_tokens / total_time if total_time > 0 else 0
+        avg_first_token_timeout = sum(first_token_timeouts) / len(first_token_timeouts) if first_token_timeouts else 0
+        min_first_token_timeout = min(first_token_timeouts) if first_token_timeouts else 0
+        max_first_token_timeout = max(first_token_timeouts) if first_token_timeouts else 0
+        result = TestResult(
+            concurrency=concurrency,
+            total_tokens=total_tokens,
+            total_time=total_time,
+            tokens_per_second=tokens_per_second,
+            success_count=success_count,
+            error_count=error_count,
+            avg_response_time=sum(response_times) / len(response_times) if response_times else 0,
+            min_response_time=min(response_times) if response_times else 0,
+            max_response_time=max(response_times) if response_times else 0,
+            first_token_timeouts=first_token_timeouts,
+            avg_first_token_timeout=avg_first_token_timeout,
+            min_first_token_timeout=min_first_token_timeout,
+            max_first_token_timeout=max_first_token_timeout
+        )
+        self.results.append(result)
+        self.logger.info(f"并发数 {concurrency} 测试完成: {tokens_per_second:.2f} tokens/s")
+        if error_msgs:
+            self.logger.error(f"并发数 {concurrency} 失败任务详情：\n" + "\n".join(error_msgs))
+            if success_count == 0:
+                self.logger.error(f"并发数 {concurrency} 下全部任务失败，测试已终止，请检查API Key、网络、模型服务等配置。")
+                raise RuntimeError(f"并发数 {concurrency} 下全部任务失败，测试终止。")
+        return result
 
     def generate_report(self, timestamp: str = None):
         if not timestamp:
@@ -230,7 +194,7 @@ class TokenRateTester:
         report.append("")
         report.append("详细测试结果:")
         report.append("-" * 60)
-        report.append(f"{'并发数':<8} {'Token/s':<12} {'总Token':<10} {'总时间(s)':<12} {'成功率':<10} {'平均响应时间(s)':<15}")
+        report.append(f"{'并发数':<8} {'Token/s':<12} {'总Token':<10} {'总时间(s)':<12} {'成功率':<10} {'平均响应时间(s)':<15} {'首Token超时(s)':<15}")
         report.append("-" * 60)
         for result in self.results:
             total_requests = result.success_count + result.error_count
@@ -241,7 +205,8 @@ class TokenRateTester:
                 f"{result.total_tokens:<10} "
                 f"{result.total_time:<12.2f} "
                 f"{success_rate:<10.2f}% "
-                f"{result.avg_response_time:<15.2f}"
+                f"{result.avg_response_time:<15.2f} "
+                f"{result.avg_first_token_timeout:<15.2f}"
             )
         report.append("-" * 60)
         report.append("")

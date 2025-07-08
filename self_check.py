@@ -1,9 +1,11 @@
 import importlib.util
 import sys
 import socket
-import requests
 from dataclasses import dataclass
 import matplotlib.font_manager as fm
+import openai
+import time
+import json
 
 @dataclass
 class ModelConfig:
@@ -17,7 +19,7 @@ class ModelConfig:
     timeout: int = 60
 
 def check_dependencies():
-    required = ["aiohttp", "matplotlib"]
+    required = ["openai", "matplotlib"]
     missing = []
     for pkg in required:
         if importlib.util.find_spec(pkg) is None:
@@ -29,49 +31,56 @@ def check_dependencies():
 
 def check_network(url: str, timeout: int = 5):
     try:
-        host = url.split('//')[-1].split('/')[0].split(':')[0]
-        socket.create_connection((host, 80), timeout=timeout)
+        # 支持http/https和端口
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+        socket.create_connection((host, port), timeout=timeout)
         return True
     except Exception as e:
-        print(f"网络连接失败: {e}")
+        print(f"网络连接失败: {e}，请检查模型URL和网络环境。")
         return False
 
-def check_api_key(config: ModelConfig):
+def check_api_key_stream(config: ModelConfig):
     try:
-        headers = {"Content-Type": "application/json"}
-        if config.api_key:
-            headers["Authorization"] = f"Bearer {config.api_key}"
-        # 构造不同API类型的请求体
-        if config.api_type in ('openai', 'thirdparty'):
-            payload = {"model": config.model_name, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1, "temperature": 0.1, "stream": False}
-        elif config.api_type == 'vllm':
-            payload = {"model": config.model_name, "prompt": "ping", "max_tokens": 1, "temperature": 0.1, "stream": False}
-        elif config.api_type == 'ollama':
-            payload = {"model": config.model_name, "prompt": "ping", "options": {"num_predict": 1, "temperature": 0.1}}
-        else:
-            print(f"不支持的API类型: {config.api_type}")
+        openai.api_key = config.api_key
+        openai.base_url = config.model_url.rstrip("/v1/chat/completions")
+        start_time = time.time()
+        first_token_time = None
+        content = ''
+        stream = openai.ChatCompletion.create(
+            model=config.model_name,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+            temperature=0.1,
+            stream=True
+        )
+        for chunk in stream:
+            if 'choices' in chunk and chunk['choices']:
+                delta = chunk['choices'][0].get('delta', {})
+                token_piece = delta.get('content', '')
+                if token_piece:
+                    if first_token_time is None:
+                        first_token_time = time.time()
+                    content += token_piece
+        end_time = time.time()
+        if first_token_time is None:
+            print("模型接口无响应或未返回任何Token，请检查模型服务是否正常、API Key是否有效。")
             return False
-        resp = requests.post(config.model_url, headers=headers, json=payload, timeout=10)
-        # 检查编码
-        try:
-            resp_text = resp.content.decode('utf-8')
-        except Exception:
-            print("模型接口返回内容非UTF-8编码，疑似乱码！")
+        if not content.strip():
+            print("模型接口响应内容为空，可能API Key无效、模型未加载或服务异常。")
             return False
-        if resp.status_code == 401:
-            print("API Key 无效或未授权！")
-            return False
-        elif resp.status_code != 200:
-            print(f"API Key 检查失败，HTTP状态码: {resp.status_code}, 响应: {resp_text}")
-            return False
-        # 检查内容是否乱码
-        if '\ufffd' in resp_text:
-            print("模型接口返回内容疑似乱码！")
-            return False
-        print("模型接口返回内容正常，编码为UTF-8。")
+        print(f"模型接口流式输出正常，首Token超时: {first_token_time - start_time:.3f}s，总耗时: {end_time - start_time:.3f}s。内容片段: {content[:30]}")
         return True
+    except openai.error.AuthenticationError:
+        print("API Key 无效或未授权，请检查API Key配置。")
+        return False
+    except openai.error.Timeout:
+        print("模型接口请求超时，请检查服务状态和timeout设置。")
+        return False
     except Exception as e:
-        print(f"API Key 检查异常: {e}")
+        print(f"API Key 检查异常: {e}，请检查API Key、模型URL、网络环境和模型服务状态。")
         return False
 
 def check_matplotlib_fonts():
@@ -98,7 +107,7 @@ def run_self_check(config: ModelConfig):
         sys.exit(1)
     print("[自检] 网络连通性正常")
 
-    print("[自检] 检查API Key及模型接口...")
-    if not check_api_key(config):
+    print("[自检] 检查API Key及模型接口(流式)...")
+    if not check_api_key_stream(config):
         sys.exit(1)
     print("[自检] API Key及模型接口检查通过\n") 
