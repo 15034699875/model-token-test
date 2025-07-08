@@ -2,8 +2,19 @@ import importlib.util
 import sys
 import socket
 import requests
-from config import ModelConfig
+from dataclasses import dataclass
 import matplotlib.font_manager as fm
+
+@dataclass
+class ModelConfig:
+    name: str = 'default'
+    api_type: str = 'openai'  # openai/thirdparty/vllm/ollama
+    model_url: str = ''
+    model_name: str = ''
+    api_key: str = ''
+    max_tokens: int = 2000
+    temperature: float = 0.7
+    timeout: int = 60
 
 def check_dependencies():
     required = ["aiohttp", "matplotlib"]
