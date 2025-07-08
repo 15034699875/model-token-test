@@ -30,9 +30,10 @@ class TestResult:
     max_response_time: float
 
 class TokenRateTester:
-    def __init__(self, config, output_dir='outputs'):
+    def __init__(self, config, output_dir='outputs', logger=None):
         self.config = config
         self.output_dir = output_dir
+        self.logger = logger
         self.results: List[TestResult] = []
         self.test_prompts = [
             "请详细描述人工智能的发展历程，从图灵测试开始，到现在的深度学习时代，包括重要的里程碑事件、关键技术突破、以及未来发展趋势。请尽可能详细地阐述每个阶段的特点和影响。",
@@ -189,7 +190,8 @@ class TokenRateTester:
             if error_msgs:
                 self.logger.error(f"并发数 {concurrency} 失败任务详情：\n" + "\n".join(error_msgs))
                 if success_count == 0:
-                    self.logger.error(f"并发数 {concurrency} 下全部任务失败，请检查API Key、网络、模型服务等配置。")
+                    self.logger.error(f"并发数 {concurrency} 下全部任务失败，测试已终止，请检查API Key、网络、模型服务等配置。")
+                    raise RuntimeError(f"并发数 {concurrency} 下全部任务失败，测试终止。")
             return result
 
     def generate_report(self, timestamp: str = None):

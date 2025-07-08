@@ -2,6 +2,8 @@ import json
 import os
 from dataclasses import dataclass, asdict, field
 from typing import List, Dict
+from self_check import run_self_check
+import sys
 
 CONFIG_FILE = 'config.json'
 
@@ -68,13 +70,27 @@ class ConfigManager:
             op = input("请选择操作: ").strip().lower()
             if op == 'a':
                 self.add_model()
+                # 新增后自检
+                if not self._self_check_current():
+                    print("自检未通过，已删除该配置！")
+                    del self.models[self.active_index]
+                    self.active_index = 0
             elif op == 'e':
                 self.edit_model(self.active_index)
+                # 编辑后自检
+                if not self._self_check_current():
+                    print("自检未通过，已还原为编辑前配置！")
+                    self.models[self.active_index] = self._last_backup
             elif op == 's':
                 idx = input("输入要切换的配置编号: ").strip()
                 if idx.isdigit() and 0 <= int(idx) < len(self.models):
+                    backup = self.active_index
                     self.active_index = int(idx)
-                    print(f"已切换到配置[{idx}] {self.models[self.active_index].name}")
+                    if not self._self_check_current():
+                        print("自检未通过，切换失败，仍保留原配置！")
+                        self.active_index = backup
+                    else:
+                        print(f"已切换到配置[{idx}] {self.models[self.active_index].name}")
                 else:
                     print("编号无效")
             elif op == 'd':
@@ -125,6 +141,7 @@ class ConfigManager:
 
     def edit_model(self, idx):
         m = self.models[idx]
+        self._last_backup = ModelConfig(**asdict(m))
         print(f"\n编辑配置[{idx}] {m.name}")
         for field in m.__dataclass_fields__:
             old = getattr(m, field)
@@ -139,4 +156,14 @@ class ConfigManager:
                         setattr(m, field, new)
                 except Exception as e:
                     print(f"字段 {field} 修改失败: {e}")
-        print("修改完成。") 
+        print("修改完成。")
+
+    def _self_check_current(self):
+        try:
+            run_self_check(self.models[self.active_index])
+            return True
+        except SystemExit:
+            return False
+        except Exception as e:
+            print(f"自检异常: {e}")
+            return False 
