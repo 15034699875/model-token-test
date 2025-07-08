@@ -59,7 +59,10 @@ class TokenRateTester:
 
     def call_model_api(self, prompt: str) -> dict:
         api_key = self.config.api_key if self.config.api_type in ("openai", "thirdparty") else None
-        base_url = self.config.model_url.rstrip("/v1/chat/completions")
+        # 自动推断base_url（去除最后一级路径即可）
+        from urllib.parse import urlparse
+        parsed = urlparse(self.config.model_url)
+        base_url = self.config.model_url.rsplit("/", 2)[0] if self.config.model_url.endswith("/completions") else self.config.model_url.rsplit("/", 1)[0]
         client = openai.OpenAI(api_key=api_key or None, base_url=base_url)
         start_time = time.time()
         first_token_time = None

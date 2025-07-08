@@ -46,7 +46,11 @@ def check_api_key_stream(config: ModelConfig):
     try:
         # 只在openai/thirdparty类型下设置api_key
         api_key = config.api_key if config.api_type in ("openai", "thirdparty") else None
-        base_url = config.model_url.rstrip("/v1/chat/completions")
+        # 自动推断base_url（去除最后一级路径即可）
+        from urllib.parse import urlparse
+        parsed = urlparse(config.model_url)
+        # 去除最后一级路径
+        base_url = config.model_url.rsplit("/", 2)[0] if config.model_url.endswith("/completions") else config.model_url.rsplit("/", 1)[0]
         import openai
         client = openai.OpenAI(api_key=api_key or None, base_url=base_url)
         start_time = time.time()
@@ -76,7 +80,6 @@ def check_api_key_stream(config: ModelConfig):
             print(f"模型接口流式输出正常，首Token超时: {first_token_time - start_time:.3f}s，总耗时: {end_time - start_time:.3f}s。内容片段: {content[:30]}")
             return True
         except Exception as e:
-            # openai/thirdparty类型下，优先识别openai.error
             if config.api_type in ("openai", "thirdparty"):
                 if hasattr(e, 'status_code') and getattr(e, 'status_code', None) == 401:
                     print("API Key 无效或未授权，请检查API Key配置。")
