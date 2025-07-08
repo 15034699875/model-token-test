@@ -44,41 +44,58 @@ def check_network(url: str, timeout: int = 5):
 
 def check_api_key_stream(config: ModelConfig):
     try:
-        openai.api_key = config.api_key
-        openai.base_url = config.model_url.rstrip("/v1/chat/completions")
+        # 只在openai/thirdparty类型下设置api_key
+        if config.api_type in ("openai", "thirdparty"):
+            try:
+                from openai import error as openai_error
+            except ImportError:
+                openai_error = None
+            openai.api_key = config.api_key or None
+            openai.base_url = config.model_url.rstrip("/v1/chat/completions")
+        else:
+            # 本地部署如vllm/ollama等，openai模块可不设置api_key
+            openai.api_key = None
+            openai.base_url = config.model_url.rstrip("/v1/chat/completions")
         start_time = time.time()
         first_token_time = None
         content = ''
-        stream = openai.ChatCompletion.create(
-            model=config.model_name,
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
-            temperature=0.1,
-            stream=True
-        )
-        for chunk in stream:
-            if 'choices' in chunk and chunk['choices']:
-                delta = chunk['choices'][0].get('delta', {})
-                token_piece = delta.get('content', '')
-                if token_piece:
-                    if first_token_time is None:
-                        first_token_time = time.time()
-                    content += token_piece
-        end_time = time.time()
-        if first_token_time is None:
-            print("模型接口无响应或未返回任何Token，请检查模型服务是否正常、API Key是否有效。")
+        try:
+            stream = openai.ChatCompletion.create(
+                model=config.model_name,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+                temperature=0.1,
+                stream=True
+            )
+            for chunk in stream:
+                if 'choices' in chunk and chunk['choices']:
+                    delta = chunk['choices'][0].get('delta', {})
+                    token_piece = delta.get('content', '')
+                    if token_piece:
+                        if first_token_time is None:
+                            first_token_time = time.time()
+                        content += token_piece
+            end_time = time.time()
+            if first_token_time is None:
+                print("模型接口无响应或未返回任何Token，请检查模型服务是否正常、API Key是否有效。")
+                return False
+            if not content.strip():
+                print("模型接口响应内容为空，可能API Key无效、模型未加载或服务异常。")
+                return False
+            print(f"模型接口流式输出正常，首Token超时: {first_token_time - start_time:.3f}s，总耗时: {end_time - start_time:.3f}s。内容片段: {content[:30]}")
+            return True
+        except Exception as e:
+            # openai/thirdparty类型下，优先识别openai.error
+            if config.api_type in ("openai", "thirdparty") and 'openai_error' in locals() and openai_error:
+                if isinstance(e, openai_error.AuthenticationError):
+                    print("API Key 无效或未授权，请检查API Key配置。")
+                    return False
+                if isinstance(e, openai_error.Timeout):
+                    print("模型接口请求超时，请检查服务状态和timeout设置。")
+                    return False
+            # 其它情况直接输出异常内容
+            print(f"API Key 检查异常: {e}，请检查API Key、模型URL、网络环境和模型服务状态。")
             return False
-        if not content.strip():
-            print("模型接口响应内容为空，可能API Key无效、模型未加载或服务异常。")
-            return False
-        print(f"模型接口流式输出正常，首Token超时: {first_token_time - start_time:.3f}s，总耗时: {end_time - start_time:.3f}s。内容片段: {content[:30]}")
-        return True
-    except openai.error.AuthenticationError:
-        print("API Key 无效或未授权，请检查API Key配置。")
-        return False
-    except openai.error.Timeout:
-        print("模型接口请求超时，请检查服务状态和timeout设置。")
-        return False
     except Exception as e:
         print(f"API Key 检查异常: {e}，请检查API Key、模型URL、网络环境和模型服务状态。")
         return False
