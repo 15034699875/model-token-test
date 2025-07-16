@@ -1,22 +1,11 @@
 import importlib.util
 import sys
 import socket
-from dataclasses import dataclass
+from model_config import ModelConfig  # 统一ModelConfig来源
 import matplotlib.font_manager as fm
 import openai
 import time
 import json
-
-@dataclass
-class ModelConfig:
-    name: str = 'default'
-    api_type: str = 'openai'  # openai/thirdparty/vllm/ollama
-    model_url: str = ''
-    model_name: str = ''
-    api_key: str = ''
-    max_tokens: int = 2000
-    temperature: float = 0.7
-    timeout: int = 60
 
 def check_dependencies():
     required = ["openai", "matplotlib"]

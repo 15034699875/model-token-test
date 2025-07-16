@@ -59,20 +59,30 @@ class TokenRateTester:
 
     def call_model_api(self, prompt: str) -> dict:
         api_key = self.config.api_key if self.config.api_type in ("openai", "thirdparty") else None
-        # 自动推断base_url（去除最后一级路径即可）
-        from urllib.parse import urlparse
-        parsed = urlparse(self.config.model_url)
-        base_url = self.config.model_url.rsplit("/", 2)[0] if self.config.model_url.endswith("/completions") else self.config.model_url.rsplit("/", 1)[0]
-        client = openai.OpenAI(api_key=api_key or None, base_url=base_url)
+        # base_url直接用配置，兼容路径型model字段
+        base_url = self.config.model_url
+        # 自动兼容路径型model字段
+        model_field = self.config.model_name
+        if not model_field.startswith("/") and "/" not in model_field:
+            # 纯模型名，正常传递
+            pass
+        else:
+            # 路径型，直接传递
+            pass
+        # debug日志
+        if self.logger:
+            self.logger.info(f"[DEBUG] 请求base_url: {base_url}, model字段: {model_field}")
         start_time = time.time()
         first_token_time = None
         total_tokens = 0
         content = ''
         # 检查是否为deepseek模型，若是则深度思考内容与普通输出一致处理
-        is_deepseek = 'deepseek' in self.config.model_name.lower()
+        is_deepseek = 'deepseek' in model_field.lower()
         try:
+            import openai
+            client = openai.OpenAI(api_key=api_key or None, base_url=base_url)
             stream = client.chat.completions.create(
-                model=self.config.model_name,
+                model=model_field,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=self.config.max_tokens,
                 temperature=self.config.temperature,
@@ -99,6 +109,8 @@ class TokenRateTester:
             }
         except Exception as e:
             end_time = time.time()
+            if self.logger:
+                self.logger.error(f"[DEBUG] 请求异常: {e}")
             return {
                 'success': False,
                 'error': str(e),

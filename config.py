@@ -2,6 +2,7 @@ import json
 import os
 from dataclasses import dataclass, asdict, field
 from typing import List, Dict
+from model_config import ModelConfig  # 保证ModelConfig来源唯一
 from self_check import run_self_check
 import sys
 
@@ -13,17 +14,6 @@ SUPPORTED_API_TYPES = [
     'vllm',        # 本地vllm推理
     'ollama'       # 本地Ollama推理
 ]
-
-@dataclass
-class ModelConfig:
-    name: str = 'default'
-    api_type: str = 'openai'  # openai/thirdparty/vllm/ollama
-    model_url: str = ''
-    model_name: str = ''
-    api_key: str = ''
-    max_tokens: int = 2000
-    temperature: float = 0.7
-    timeout: int = 60
 
 @dataclass
 class ConfigManager:
@@ -75,12 +65,14 @@ class ConfigManager:
                     print("自检未通过，已删除该配置！")
                     del self.models[self.active_index]
                     self.active_index = 0
+                break  # 配置后直接返回主菜单
             elif op == 'e':
                 self.edit_model(self.active_index)
                 # 编辑后自检
                 if not self._self_check_current():
                     print("自检未通过，已还原为编辑前配置！")
                     self.models[self.active_index] = self._last_backup
+                break  # 配置后直接返回主菜单
             elif op == 's':
                 idx = input("输入要切换的配置编号: ").strip()
                 if idx.isdigit() and 0 <= int(idx) < len(self.models):
@@ -93,6 +85,7 @@ class ConfigManager:
                         print(f"已切换到配置[{idx}] {self.models[self.active_index].name}")
                 else:
                     print("编号无效")
+                break  # 配置后直接返回主菜单
             elif op == 'd':
                 if len(self.models) <= 1:
                     print("至少保留一个配置！")
@@ -104,6 +97,7 @@ class ConfigManager:
                         print("已删除并切换到第一个配置")
                     else:
                         print("编号无效")
+                break  # 配置后直接返回主菜单
             elif op == 'q':
                 self.save()
                 print("配置已保存到 config.json\n")
