@@ -68,6 +68,8 @@ class TokenRateTester:
         first_token_time = None
         total_tokens = 0
         content = ''
+        # 检查是否为deepseek模型，若是则深度思考内容与普通输出一致处理
+        is_deepseek = 'deepseek' in self.config.model_name.lower()
         try:
             stream = client.chat.completions.create(
                 model=self.config.model_name,
@@ -81,6 +83,7 @@ class TokenRateTester:
                 if token_piece:
                     if first_token_time is None:
                         first_token_time = time.time()
+                    # deepseek模型的深度思考内容与普通内容一并拼接
                     content += token_piece
                     total_tokens += 1
             end_time = time.time()
