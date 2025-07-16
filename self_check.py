@@ -52,11 +52,10 @@ def check_api_key_stream(config: ModelConfig):
         parsed = urlparse(config.model_url)
         # 去除最后一级路径
         base_url = config.model_url.rsplit("/", 2)[0] if config.model_url.endswith("/completions") else config.model_url.rsplit("/", 1)[0]
-        # ollama/vllm类型不强制api_key
+        # ollama/vllm类型不强制api_key，且不传递api_key参数
         if config.api_type in ("ollama", "vllm"):
-            # 只检测接口连通性，不检测api_key
             try:
-                client = openai.OpenAI(base_url=base_url)
+                client = openai.OpenAI(base_url=base_url)  # 不传api_key参数
                 start_time = time.time()
                 first_token_time = None
                 content = ''
@@ -74,7 +73,6 @@ def check_api_key_stream(config: ModelConfig):
                             first_token_time = time.time()
                         content += token_piece
                 end_time = time.time()
-                # 修正：first_token_time为None时不做减法
                 if first_token_time is None:
                     print("模型接口无响应或未返回任何Token，请检查模型服务是否正常。")
                     return False
@@ -84,7 +82,7 @@ def check_api_key_stream(config: ModelConfig):
                 print(f"模型接口检查异常: {e}，请检查模型URL、网络环境和模型服务状态。")
                 return False
         # openai/thirdparty类型
-        client = openai.OpenAI(api_key=api_key or None, base_url=base_url)
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
         start_time = time.time()
         first_token_time = None
         content = ''
